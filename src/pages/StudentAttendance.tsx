@@ -34,10 +34,11 @@ const StudentAttendance = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerRef = useRef<any>(null);
   const [qrDetected, setQrDetected] = useState(false);
-  const [qrPhase, setQrPhase] = useState<'idle' | 'scanning' | 'detected' | 'verifying' | 'success'>('idle');
+  const [qrPhase, setQrPhase] = useState<'idle' | 'scanning' | 'detected' | 'verifying' | 'success' | 'error'>('idle');
   const qrScanStartRef = useRef<number>(0);
   const [qrProgress, setQrProgress] = useState<number>(0);
   const qrProgressIntervalRef = useRef<number | null>(null);
+  const [qrTimeRemaining, setQrTimeRemaining] = useState<number>(0);
   const qrDetectIntervalRef = useRef<number | null>(null);
   const [usingNativeBarcode, setUsingNativeBarcode] = useState(false);
   const qrStatusUnsubRef = useRef<null | { remove: () => void }>(null);
@@ -48,11 +49,12 @@ const StudentAttendance = () => {
   const faceVideoRef = useRef<HTMLVideoElement | null>(null);
   const [faceStream, setFaceStream] = useState<MediaStream | null>(null);
   const [faceDetected, setFaceDetected] = useState(false);
-  const [facePhase, setFacePhase] = useState<'idle' | 'scanning' | 'aligning' | 'detected' | 'verifying' | 'success'>('idle');
+  const [facePhase, setFacePhase] = useState<'idle' | 'scanning' | 'aligning' | 'detected' | 'verifying' | 'success' | 'error'>('idle');
   const faceDetectIntervalRef = useRef<number | null>(null);
   const faceScanStartRef = useRef<number>(0);
   const [faceProgress, setFaceProgress] = useState<number>(0);
   const faceProgressIntervalRef = useRef<number | null>(null);
+  const [faceTimeRemaining, setFaceTimeRemaining] = useState<number>(0);
   const faceStatusUnsubRef = useRef<null | { remove: () => void }>(null);
   const faceDetectedUnsubRef = useRef<null | { remove: () => void }>(null);
   // MediaPipe Face Landmarker (web)
@@ -164,15 +166,23 @@ const StudentAttendance = () => {
   const startQrProgress = useCallback(() => {
     if (qrProgressIntervalRef.current) window.clearInterval(qrProgressIntervalRef.current);
     setQrProgress(0);
-    // Increase smoothly up to ~70% while scanning
+    setQrTimeRemaining(60);
+    // Update progress based on actual time elapsed
     qrProgressIntervalRef.current = window.setInterval(() => {
-      setQrProgress((p) => {
-        const cap = 70;
-        if (qrPhase !== 'scanning') return p;
-        if (p >= cap) return p;
-        return Math.min(cap, p + 3);
-      });
-    }, 100);
+      const elapsed = Date.now() - qrScanStartRef.current;
+      const remaining = Math.max(0, 60 - Math.floor(elapsed / 1000));
+      const progress = Math.min(70, (elapsed / 60000) * 70); // 70% max during scanning
+      
+      setQrTimeRemaining(remaining);
+      setQrProgress(progress);
+      
+      if (qrPhase !== 'scanning' || remaining <= 0) {
+        if (qrProgressIntervalRef.current) {
+          window.clearInterval(qrProgressIntervalRef.current);
+          qrProgressIntervalRef.current = null;
+        }
+      }
+    }, 1000);
   }, [qrPhase]);
 
   const startQrVerifyingProgress = useCallback(() => {
@@ -198,14 +208,23 @@ const StudentAttendance = () => {
   const startFaceProgress = useCallback(() => {
     if (faceProgressIntervalRef.current) window.clearInterval(faceProgressIntervalRef.current);
     setFaceProgress(0);
+    setFaceTimeRemaining(60);
+    // Update progress based on actual time elapsed
     faceProgressIntervalRef.current = window.setInterval(() => {
-      setFaceProgress((p) => {
-        const cap = 70;
-        if (facePhase !== 'scanning') return p;
-        if (p >= cap) return p;
-        return Math.min(cap, p + 3);
-      });
-    }, 100);
+      const elapsed = Date.now() - faceScanStartRef.current;
+      const remaining = Math.max(0, 60 - Math.floor(elapsed / 1000));
+      const progress = Math.min(70, (elapsed / 60000) * 70); // 70% max during scanning
+      
+      setFaceTimeRemaining(remaining);
+      setFaceProgress(progress);
+      
+      if (facePhase !== 'scanning' || remaining <= 0) {
+        if (faceProgressIntervalRef.current) {
+          window.clearInterval(faceProgressIntervalRef.current);
+          faceProgressIntervalRef.current = null;
+        }
+      }
+    }, 1000);
   }, [facePhase]);
 
   const startFaceVerifyingProgress = useCallback(() => {
@@ -417,18 +436,18 @@ const StudentAttendance = () => {
       console.log('✅ QR: Valid QR detected, continuing scan for realistic duration...');
     }
 
-    // Enforce minimum scanning duration for realistic feel
-    const minScanMs = 8000; // Increased to 8 seconds
+    // ALWAYS enforce minimum scanning duration - no exceptions
+    const minScanMs = 60000; // 1 minute minimum scanning
     const elapsed = Date.now() - qrScanStartRef.current;
-    console.log(`⏱️ QR TIMING: ${elapsed}ms elapsed / ${minScanMs}ms required`);
+    console.log(`⏱️ QR TIMING: ${elapsed}ms elapsed / ${minScanMs}ms required (${Math.round((minScanMs - elapsed) / 1000)}s remaining)`);
     
+    // NEVER proceed before minimum time, even with valid detection
     if (elapsed < minScanMs) {
-      // Keep scanning even after detection - don't stop until minimum time
-      console.log(`🔄 QR: Still scanning... ${Math.round((minScanMs - elapsed) / 1000)}s remaining`);
-      return;
+      console.log(`🔄 QR: FORCED WAIT - Still scanning... ${Math.round((minScanMs - elapsed) / 1000)}s remaining`);
+      return; // Always return early if not enough time has passed
     }
 
-    console.log('🎯 QR: Minimum time reached, proceeding to verification...');
+    console.log('🎯 QR: FULL MINUTE COMPLETED - proceeding to verification...');
 
     // Stop scanning and proceed to verification
     if (scannerRef.current) {
@@ -456,36 +475,12 @@ const StudentAttendance = () => {
         studentId: studentData.id,
       });
       
-      if (!ok) {
-        // Invalid QR - reset and resume scanning
-        toast.error('Invalid QR code. Please scan a valid classroom QR.');
-        setQrPhase('scanning');
-        setQrDetected(false);
-        qrScanStartRef.current = Date.now();
-        startQrProgress();
-        
-        // Restart scanner
-        if (scannerRef.current) {
-          try { await scannerRef.current.start(); } catch {}
-        } else {
-          // Restart detection interval if using native detector
-          const videoEl = videoRef.current;
-          if (videoEl && usingNativeBarcode) {
-            const BarcodeDetectorCtor: any = (window as any).BarcodeDetector;
-            if (BarcodeDetectorCtor) {
-              const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
-              qrDetectIntervalRef.current = window.setInterval(async () => {
-                try {
-                  const codes = await detector.detect(videoEl);
-                  const qr = codes?.find((c: any) => (c.rawValue || c?.rawValue));
-                  if (qr && (qr.rawValue || qr?.rawValue)) {
-                    handleQRDetected(qr.rawValue || qr?.rawValue);
-                  }
-                } catch (e) {}
-              }, 500);
-            }
-          }
-        }
+            if (!ok) {
+        toast.error('Invalid or expired QR code.');
+        setQrPhase('error');
+        setTimeout(async () => {
+          await stopQRScanner();
+        }, 2000);
         return;
       }
 
@@ -575,12 +570,16 @@ const StudentAttendance = () => {
             const codes = await detector.detect(videoEl);
             const qr = codes?.find((c: any) => (c.rawValue || c?.rawValue) && (c.format === 'qr_code' || true));
             if (qr && (qr.rawValue || qr?.rawValue)) {
-              handleQRDetected(qr.rawValue || qr?.rawValue);
+              // Only process if it's a valid QR with proper content
+              const content = qr.rawValue || qr?.rawValue;
+              if (content && content.length > 10) { // Ensure substantial content
+                handleQRDetected(content);
+              }
             }
           } catch (e) {
             // ignore detection errors and continue
           }
-        }, 250); // Faster polling for better detection
+        }, 500); // Slower polling to ensure proper detection
 
         toast.info('Scanner active. Point camera at the QR code.');
       } else {
@@ -596,8 +595,8 @@ const StudentAttendance = () => {
             preferredCamera: 'environment',
             highlightScanRegion: true,
             highlightCodeOutline: true,
-            // Increased scanning rate for better detection
-            maxScansPerSecond: 8,
+            // Slower scanning rate to ensure proper detection
+            maxScansPerSecond: 2,
           }
         );
 
@@ -704,16 +703,16 @@ const StudentAttendance = () => {
             const count = res?.faceLandmarks?.length || 0;
             if (count > 0) { consecutive += 1; setFaceDetected(true); } else { consecutive = Math.max(0, consecutive - 1); setFaceDetected(false); }
             // iPhone Face ID style: require stable detection over time
-            const minScanMs = 5000; // Increased to 5 seconds for more realistic timing
+            const minScanMs = 60000; // 1 minute minimum scanning for thorough verification
             const enoughTime = Date.now() - faceScanStartRef.current >= minScanMs;
             console.log(`Face detection: ${count > 0 ? 'detected' : 'none'}, consecutive: ${consecutive}, time: ${Date.now() - faceScanStartRef.current}ms / ${minScanMs}ms`);
             
-            if (count > 0 && consecutive >= 8 && enoughTime) { // Require more consecutive detections
+            if (count > 0 && consecutive >= 240 && enoughTime) { // Require 240 consecutive detections (~30 seconds of stable face detection)
               // Face detected - show scanning phase
               if (facePhase === 'scanning') {
                 setFacePhase('aligning');
                 setTimeout(() => {
-                  if (consecutive >= 8) {
+                  if (consecutive >= 240) {
                     setFacePhase('detected');
                     setTimeout(() => {
                       if (mediaPipeTimerRef.current) { window.clearInterval(mediaPipeTimerRef.current); mediaPipeTimerRef.current = null; }
@@ -737,7 +736,16 @@ const StudentAttendance = () => {
                             lecturerName: 'Dr. John Smith',
                           },
                         });
-                        toast.success('Face verified. Attendance marked.');
+                        toast.success('Attendance Marked');
+                        // SIMULATE: In a real app, this would be a server call
+                        const isMatch = Math.random() > 0.1; // 90% success rate
+
+                        if (!isMatch) {
+                          setFacePhase('error');
+                          toast.error('Face not recognized. Please try again.');
+                          setTimeout(() => stopFaceScanner(), 2000);
+                          return;
+                        }
                         setTimeout(() => { stopFaceScanner(); }, 1500);
                       }, 1800);
                     }, 800);
@@ -767,15 +775,15 @@ const StudentAttendance = () => {
                 setFaceDetected(false); 
               }
               
-              const minScanMs = 5000; // Increased to 5 seconds for consistency
+              const minScanMs = 60000; // 1 minute minimum scanning for thorough verification
               const enoughTime = Date.now() - faceScanStartRef.current >= minScanMs;
               console.log(`FaceDetector API: ${faces?.length || 0} faces, consecutive: ${consecutive}, time: ${Date.now() - faceScanStartRef.current}ms / ${minScanMs}ms`);
               
-              if (faces && faces.length > 0 && consecutive >= 8 && enoughTime) { // Require more consecutive detections
+              if (faces && faces.length > 0 && consecutive >= 180 && enoughTime) { // Require 180 consecutive detections (~1 minute of stable face detection)
                 if (facePhase === 'scanning') {
                   setFacePhase('aligning');
                   setTimeout(() => {
-                    if (consecutive >= 8) {
+                    if (consecutive >= 180) {
                       setFacePhase('detected');
                       setTimeout(() => {
                         window.clearInterval(faceDetectIntervalRef.current!);
@@ -799,7 +807,16 @@ const StudentAttendance = () => {
                               lecturerName: 'Dr. John Smith',
                             },
                           });
-                          toast.success('Face verified. Attendance marked.');
+                          toast.success('Attendance Marked');
+                          // SIMULATE: In a real app, this would be a server call
+                          const isMatch = Math.random() > 0.1; // 90% success rate
+
+                          if (!isMatch) {
+                            setFacePhase('error');
+                            toast.error('Face not recognized. Please try again.');
+                            setTimeout(() => stopFaceScanner(), 2000);
+                            return;
+                          }
                           setTimeout(() => { stopFaceScanner(); }, 1500);
                         }, 1800);
                       }, 800);
@@ -812,7 +829,7 @@ const StudentAttendance = () => {
             }
           }, 330);
         } else {
-          // Last-resort iPhone Face ID simulation - wait longer for realistic timing
+          // Last-resort iPhone Face ID simulation - wait full minute for realistic timing
           console.log('Using Face ID simulation fallback');
           setTimeout(() => {
             if (!scanningFace) return; // Check if still scanning
@@ -843,12 +860,21 @@ const StudentAttendance = () => {
                       lecturerName: 'Dr. John Smith',
                     },
                   });
-                  toast.success('Face verified. Attendance marked.');
+                  toast.success('Attendance Marked');
+                  // SIMULATE: In a real app, this would be a server call
+                  const isMatch = Math.random() > 0.1; // 90% success rate
+
+                  if (!isMatch) {
+                    setFacePhase('error');
+                    toast.error('Face not recognized. Please try again.');
+                    setTimeout(() => stopFaceScanner(), 2000);
+                    return;
+                  }
                   setTimeout(() => { stopFaceScanner(); }, 1500);
                 }, 2500); // Longer verification time
               }, 1500); // Longer detection time
             }, 2000); // Longer alignment time
-          }, 3000); // Wait 3 seconds before starting simulation
+          }, 60000); // Wait full 1 minute before starting simulation
         }
       }
     } catch (error) {
@@ -987,19 +1013,21 @@ const StudentAttendance = () => {
                     <span className="font-semibold">Face Verification</span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-500">
-                      {facePhase === 'scanning' && 'Scanning...'}
-                      {facePhase === 'verifying' && 'Verifying...'}
-                      {facePhase === 'success' && 'Attendance marked'}
-                    </span>
+                    <div className="text-xs text-gray-500 text-right w-48">
+                      {facePhase === 'scanning' && !faceDetected && <div className='text-center'><p>Position your face in the frame</p><p className='text-sm text-muted-foreground'>Waiting for a clear view...</p><p className='text-xs font-mono text-blue-600'>{faceTimeRemaining}s remaining</p></div>}
+                      {facePhase === 'scanning' && faceDetected && <div className='text-center'><CheckCircle className='mx-auto h-8 w-8 text-green-500' /><p>Face Detected</p><p className='text-sm text-muted-foreground'>Hold still...</p><p className='text-xs font-mono text-blue-600'>{faceTimeRemaining}s remaining</p></div>}
+                      {facePhase === 'aligning' && <div className='text-center'><p>Scanning...</p><p className='text-sm text-muted-foreground'>Analyzing facial features...</p></div>}
+                      {facePhase === 'verifying' && <div className='text-center'><p>Verifying Identity</p><p className='text-sm text-muted-foreground'>Matching with your profile...</p></div>}
+                      {facePhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>Attendance Marked</p><p className='text-sm text-muted-foreground'>Welcome!</p></div>}
+                      {facePhase === 'error' && <div className='text-center'><XCircle className='mx-auto h-8 w-8 text-red-500' /><p>Face Not Recognized</p><p className='text-sm text-muted-foreground'>Please try again.</p></div>}
+                    </div>
                     <Button variant="outline" onClick={stopFaceScanner}>Close</Button>
                   </div>
                 </div>
                 <div className="relative bg-black aspect-video">
                   <video ref={faceVideoRef} className="w-full h-full object-cover" muted playsInline />
                   {/* OpenCV-like overlay (face box with corner guides) */}
-                  <div className={`absolute inset-10 rounded-xl border-2 pointer-events-none ${facePhase === 'verifying' ? 'border-yellow-400/80' : facePhase === 'success' ? 'border-green-500/90' : faceDetected ? 'border-green-400/90' : 'border-blue-400/70'}`}></div>
-                  <div className="absolute inset-10 pointer-events-none">
+                  <div className={`absolute inset-10 rounded-xl border-2 pointer-events-none ${facePhase === 'verifying' ? 'border-yellow-400/80' : facePhase === 'success' ? 'border-green-500/90' : faceDetected ? 'border-green-400/90' : 'border-blue-400/70'}`}>
                     {/* Corner indicators */}
                     <div className={`absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 rounded-tl-lg transition-colors duration-300 ${
                       facePhase === 'detected' ? 'border-green-400/90' :
@@ -1063,6 +1091,73 @@ const StudentAttendance = () => {
                 </div>
                 <div className="px-4 pb-4">
                   <Progress value={faceProgress} />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* QR Scanner Modal */}
+        {showQRModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+            <div className="w-full max-w-lg mx-4">
+              <div className="bg-white rounded-lg shadow-xl overflow-hidden">
+                <div className="p-4 flex items-center justify-between border-b">
+                  <div className="flex items-center gap-2">
+                    <QrCode className="h-5 w-5 text-blue-600" />
+                    <span className="font-semibold">Scan QR Code</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-xs text-gray-500 text-right w-48">
+                      {qrPhase === 'scanning' && !qrDetected && <div className='text-center'><p>Align QR code in frame</p><p className='text-sm text-muted-foreground'>Searching for a valid code...</p><p className='text-xs font-mono text-blue-600'>{qrTimeRemaining}s remaining</p></div>}
+                      {qrPhase === 'scanning' && qrDetected && <div className='text-center'><CheckCircle className='mx-auto h-8 w-8 text-green-500' /><p>QR Code Detected</p><p className='text-sm text-muted-foreground'>Hold steady while we verify...</p><p className='text-xs font-mono text-blue-600'>{qrTimeRemaining}s remaining</p></div>}
+                      {qrPhase === 'verifying' && <div className='text-center'><p>Verifying Session</p><p className='text-sm text-muted-foreground'>Checking course and session details...</p></div>}
+                      {qrPhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>Attendance Marked</p><p className='text-sm text-muted-foreground'>You're all set!</p></div>}
+                      {qrPhase === 'error' && <div className='text-center'><XCircle className='mx-auto h-8 w-8 text-red-500' /><p>Verification Failed</p><p className='text-sm text-muted-foreground'>Invalid or expired QR code.</p></div>}
+                    </div>
+                    <Button variant="outline" onClick={stopQRScanner}>Close</Button>
+                  </div>
+                </div>
+                <div className="relative bg-black aspect-video">
+                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+                  {/* Scan overlay box */}
+                  <div className={`absolute inset-6 border-2 rounded-lg pointer-events-none transition-colors duration-300 ${
+                    qrPhase === 'detected' ? 'border-green-400/90 shadow-lg shadow-green-400/30' :
+                    qrPhase === 'verifying' ? 'border-blue-400/80 shadow-lg shadow-blue-400/30' : 
+                    qrPhase === 'success' ? 'border-green-500/90 shadow-lg shadow-green-500/40' : 
+                    'border-blue-400/70'
+                  }`}></div>
+                  {/* Animated scanning line */}
+                  <div className={`absolute left-6 right-6 top-12 h-0.5 transition-all duration-300 ${
+                    qrPhase === 'detected' ? 'bg-green-400/90 animate-pulse shadow-[0_0_20px_rgba(34,197,94,0.8)]' :
+                    qrPhase === 'verifying' ? 'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.8)]' : 
+                    qrPhase === 'success' ? 'bg-green-500/90 shadow-[0_0_20px_rgba(34,197,94,0.9)]' : 
+                    'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.7)]'
+                  }`}></div>
+                </div>
+                <div className="p-4 text-sm text-gray-600">
+                  {qrPhase === 'scanning' && 'Point your camera at the classroom QR code. Scanning for valid codes...'}
+                  {qrPhase === 'detected' && (
+                    <div className="flex items-center space-x-2 text-green-600">
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                      <span>QR Code detected! Processing...</span>
+                    </div>
+                  )}
+                  {qrPhase === 'verifying' && (
+                    <div className="flex items-center space-x-2 text-blue-600">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>Verifying with server...</span>
+                    </div>
+                  )}
+                  {qrPhase === 'success' && (
+                    <div className="flex items-center space-x-2 text-green-600">
+                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <span>✓ Attendance marked successfully</span>
+                    </div>
+                  )}
+                </div>
+                <div className="px-4 pb-4">
+                  <Progress value={qrProgress} />
                 </div>
               </div>
             </div>
@@ -1142,71 +1237,6 @@ const StudentAttendance = () => {
         ) : (
           <div className="text-center py-8">
             <p className="text-gray-500">Student data not available</p>
-          </div>
-        )}
-
-        {/* QR Scanner Modal */}
-        {showQRModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-            <div className="w-full max-w-lg mx-4">
-              <div className="bg-white rounded-lg shadow-xl overflow-hidden">
-                <div className="p-4 flex items-center justify-between border-b">
-                  <div className="flex items-center gap-2">
-                    <QrCode className="h-5 w-5 text-blue-600" />
-                    <span className="font-semibold">Scan QR Code</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-500">
-                      {qrPhase === 'scanning' && 'Scanning...'}
-                      {qrPhase === 'verifying' && 'Verifying...'}
-                      {qrPhase === 'success' && 'Attendance marked'}
-                    </span>
-                    <Button variant="outline" onClick={stopQRScanner}>Close</Button>
-                  </div>
-                </div>
-                <div className="relative bg-black aspect-video">
-                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-                  {/* Scan overlay box */}
-                  <div className={`absolute inset-6 border-2 rounded-lg pointer-events-none transition-colors duration-300 ${
-                    qrPhase === 'detected' ? 'border-green-400/90 shadow-lg shadow-green-400/30' :
-                    qrPhase === 'verifying' ? 'border-blue-400/80 shadow-lg shadow-blue-400/30' : 
-                    qrPhase === 'success' ? 'border-green-500/90 shadow-lg shadow-green-500/40' : 
-                    'border-blue-400/70'
-                  }`}></div>
-                  {/* Animated scanning line */}
-                  <div className={`absolute left-6 right-6 top-12 h-0.5 transition-all duration-300 ${
-                    qrPhase === 'detected' ? 'bg-green-400/90 animate-pulse shadow-[0_0_20px_rgba(34,197,94,0.8)]' :
-                    qrPhase === 'verifying' ? 'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.8)]' : 
-                    qrPhase === 'success' ? 'bg-green-500/90 shadow-[0_0_20px_rgba(34,197,94,0.9)]' : 
-                    'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.7)]'
-                  }`}></div>
-                </div>
-                <div className="p-4 text-sm text-gray-600">
-                  {qrPhase === 'scanning' && 'Point your camera at the classroom QR code. Scanning for valid codes...'}
-                  {qrPhase === 'detected' && (
-                    <div className="flex items-center space-x-2 text-green-600">
-                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                      <span>QR Code detected! Processing...</span>
-                    </div>
-                  )}
-                  {qrPhase === 'verifying' && (
-                    <div className="flex items-center space-x-2 text-blue-600">
-                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                      <span>Verifying with server...</span>
-                    </div>
-                  )}
-                  {qrPhase === 'success' && (
-                    <div className="flex items-center space-x-2 text-green-600">
-                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                      <span>✓ Attendance marked successfully</span>
-                    </div>
-                  )}
-                </div>
-                <div className="px-4 pb-4">
-                  <Progress value={qrProgress} />
-                </div>
-              </div>
-            </div>
           </div>
         )}
 
