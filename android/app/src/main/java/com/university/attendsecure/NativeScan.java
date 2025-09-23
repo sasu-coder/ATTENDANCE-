@@ -198,14 +198,19 @@ public class NativeScan extends Plugin {
               if (barcodes != null && !barcodes.isEmpty()) {
                 Barcode b = barcodes.get(0);
                 String raw = b.getRawValue();
-                if (raw != null && elapsed > 1200) {
+                // Require minimum 2 minutes of scanning
+                if (raw != null && elapsed > 120000) {
                   // Pause analysis while verifying
                   qrActive = false;
-                  emitQrStatus("verifying", 85);
+                  emitQrStatus("detected", 75);
                   mainHandler.postDelayed(() -> {
-                    emitQrStatus("success", 100);
-                    emitQrDetected(raw);
-                  }, 800);
+                    emitQrStatus("verifying", 85);
+                    // Add much longer verification delay (6 seconds)
+                    mainHandler.postDelayed(() -> {
+                      emitQrStatus("success", 100);
+                      emitQrDetected(raw);
+                    }, 6000);
+                  }, 1000);
                 }
               }
             })
@@ -276,12 +281,21 @@ public class NativeScan extends Plugin {
               emitFaceStatus("scanning", Math.max(10, prog));
               boolean any = faces != null && !faces.isEmpty();
               if (any) { stableFrames++; } else { stableFrames = Math.max(0, stableFrames - 1); }
-              boolean enoughTime = elapsed > 1500;
-              if (stableFrames >= 5 && enoughTime) {
+              // Require minimum 2 minutes of scanning
+              boolean enoughTime = elapsed > 120000;
+              // Just need some stable frames and enough time
+              if (stableFrames >= 30 && enoughTime) {
                 faceActive = false;
-                emitFaceDetected(true);
-                emitFaceStatus("verifying", 85);
-                mainHandler.postDelayed(() -> emitFaceStatus("success", 100), 800);
+                emitFaceStatus("aligning", 75);
+                mainHandler.postDelayed(() -> {
+                  emitFaceStatus("detected", 80);
+                  mainHandler.postDelayed(() -> {
+                    emitFaceDetected(true);
+                    emitFaceStatus("verifying", 90);
+                    // Add much longer verification delay (7 seconds)
+                    mainHandler.postDelayed(() -> emitFaceStatus("success", 100), 7000);
+                  }, 1500);
+                }, 1200);
               }
             })
             .addOnFailureListener(_e -> { /* ignore */ })

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance System Demo - 2 Minute Verification</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        
+        h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        
+        .demo-buttons {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            margin: 50px 0;
+            flex-wrap: wrap;
+        }
+        
+        .demo-btn {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            border: none;
+            color: white;
+            padding: 20px 40px;
+            font-size: 1.3em;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            min-width: 250px;
+        }
+        
+        .demo-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+        }
+        
+        .demo-btn:active {
+            transform: translateY(0);
+        }
+        
+        .scanner-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+        }
+        
+        .scanner-content {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            color: black;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        
+        .scanner-display {
+            background: #000;
+            height: 250px;
+            border-radius: 15px;
+            margin: 30px 0;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        
+        .scan-line {
+            position: absolute;
+            width: 90%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #00ff00, transparent);
+            animation: scanning 3s ease-in-out infinite;
+        }
+        
+        @keyframes scanning {
+            0% { top: 10%; opacity: 0; }
+            50% { opacity: 1; }
+            100% { top: 90%; opacity: 0; }
+        }
+        
+        .target-frame {
+            position: absolute;
+            inset: 30px;
+            border: 3px solid #00ff00;
+            border-radius: 10px;
+            animation: pulse-border 2s infinite;
+        }
+        
+        @keyframes pulse-border {
+            0%, 100% { border-color: #00ff00; }
+            50% { border-color: #ffff00; }
+        }
+        
+        .big-timer {
+            font-size: 4em;
+            font-weight: bold;
+            color: #2196F3;
+            margin: 20px 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .progress-wrapper {
+            margin: 30px 0;
+        }
+        
+        .progress-track {
+            width: 100%;
+            height: 25px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            width: 0%;
+            transition: width 1s ease;
+            position: relative;
+        }
+        
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: progress-shine 2s infinite;
+        }
+        
+        @keyframes progress-shine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .status-text {
+            font-size: 1.4em;
+            margin: 20px 0;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .success-animation {
+            color: #4CAF50;
+            font-size: 2em;
+            font-weight: bold;
+            animation: success-bounce 1s ease-out;
+        }
+        
+        @keyframes success-bounce {
+            0% { transform: scale(0.5); opacity: 0; }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        
+        .close-button {
+            background: #f44336;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1.1em;
+            margin-top: 20px;
+            transition: background 0.3s ease;
+        }
+        
+        .close-button:hover {
+            background: #d32f2f;
+        }
+        
+        .info-panel {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 30px;
+            margin: 40px 0;
+            backdrop-filter: blur(10px);
+        }
+        
+        .feature-list {
+            text-align: left;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        
+        .feature-list li {
+            margin: 10px 0;
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎓 Attendance Verification System</h1>
+        <p style="font-size: 1.3em; margin-bottom: 40px;">
+            Experience the 2-minute verification process
+        </p>
+        
+        <div class="demo-buttons">
+            <button class="demo-btn" onclick="startDemo('QR')">
+                📱 QR Code Scanner Demo
+            </button>
+            <button class="demo-btn" onclick="startDemo('Face')">
+                👤 Face Recognition Demo
+            </button>
+        </div>
+        
+        <div class="info-panel">
+            <h2>🔒 Security Features</h2>
+            <ul class="feature-list">
+                <li>✅ Exactly 2 minutes verification time</li>
+                <li>✅ Real-time progress tracking</li>
+                <li>✅ Animated scanning interface</li>
+                <li>✅ "ATTENDANCE SIGNED" confirmation</li>
+                <li>✅ Professional security simulation</li>
+                <li>✅ Cross-platform compatibility</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Scanner Overlay -->
+    <div id="scannerOverlay" class="scanner-overlay">
+        <div class="scanner-content">
+            <h2 id="scannerTitle">Verification in Progress</h2>
+            
+            <div class="scanner-display">
+                <div class="target-frame"></div>
+                <div class="scan-line"></div>
+                <div id="scannerMessage" style="color: #00ff00; font-size: 1.3em; z-index: 10;">
+                    Initializing...
+                </div>
+            </div>
+            
+            <div class="big-timer" id="bigTimer">2:00</div>
+            
+            <div class="progress-wrapper">
+                <div class="progress-track">
+                    <div id="progressBar" class="progress-bar"></div>
+                </div>
+                <div style="margin-top: 10px; font-size: 1.1em;">
+                    <span id="progressPercent">0%</span> Complete
+                </div>
+            </div>
+            
+            <div id="statusText" class="status-text">
+                Preparing verification system...
+            </div>
+            
+            <button class="close-button" onclick="closeDemo()">Close Demo</button>
+        </div>
+    </div>
+
+    <script>
+        let demoTimer = null;
+        let currentMethod = '';
+        let startTime = 0;
+        const TOTAL_SECONDS = 120; // 2 minutes
+
+        function startDemo(method) {
+            currentMethod = method;
+            document.getElementById('scannerTitle').textContent = 
+                `${method === 'QR' ? 'QR Code Scanner' : 'Face Recognition'} - 2 Minute Demo`;
+            
+            document.getElementById('scannerOverlay').style.display = 'block';
+            resetDemo();
+            
+            startTime = Date.now();
+            demoTimer = setInterval(updateDemo, 100); // Update every 100ms for smooth animation
+            
+            // Simulate detection after 15 seconds
+            setTimeout(() => {
+                if (demoTimer) {
+                    document.getElementById('scannerMessage').textContent = 
+                        `${method === 'QR' ? 'QR Code' : 'Face'} Detected! ✅`;
+                    document.getElementById('statusText').textContent = 
+                        'Target detected - continuing thorough verification...';
+                }
+            }, 15000);
+            
+            // Show verification phase at 90%
+            setTimeout(() => {
+                if (demoTimer) {
+                    document.getElementById('statusText').textContent = 
+                        'Final verification and security checks...';
+                }
+            }, 108000); // 1:48
+        }
+
+        function updateDemo() {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const remaining = Math.max(0, TOTAL_SECONDS - elapsed);
+            const progress = Math.min(100, (elapsed / TOTAL_SECONDS) * 100);
+            
+            // Update timer
+            const minutes = Math.floor(remaining / 60);
+            const seconds = Math.floor(remaining % 60);
+            document.getElementById('bigTimer').textContent = 
+                `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Update progress bar
+            document.getElementById('progressBar').style.width = `${progress}%`;
+            document.getElementById('progressPercent').textContent = `${Math.floor(progress)}%`;
+            
+            // Update status messages
+            if (progress < 10) {
+                document.getElementById('statusText').textContent = 
+                    `Initializing ${currentMethod === 'QR' ? 'QR scanner' : 'face recognition'} system...`;
+            } else if (progress < 25) {
+                document.getElementById('statusText').textContent = 
+                    `Scanning for ${currentMethod === 'QR' ? 'QR code' : 'facial features'}...`;
+            } else if (progress < 75) {
+                document.getElementById('statusText').textContent = 
+                    'Analyzing and processing verification data...';
+            } else if (progress < 95) {
+                document.getElementById('statusText').textContent = 
+                    'Performing final security validation...';
+            }
+            
+            // Complete at 2 minutes
+            if (remaining <= 0) {
+                completeDemo();
+            }
+        }
+
+        function completeDemo() {
+            if (demoTimer) {
+                clearInterval(demoTimer);
+                demoTimer = null;
+            }
+            
+            // Show success
+            document.getElementById('bigTimer').textContent = '✅ COMPLETE';
+            document.getElementById('bigTimer').style.color = '#4CAF50';
+            document.getElementById('progressBar').style.width = '100%';
+            document.getElementById('progressPercent').textContent = '100%';
+            
+            document.getElementById('scannerMessage').innerHTML = 
+                '<div class="success-animation">🎉 ATTENDANCE SIGNED</div>';
+            
+            document.getElementById('statusText').innerHTML = 
+                `<div class="success-animation">✅ ${currentMethod === 'QR' ? 'QR Code' : 'Face Recognition'} Verified Successfully!</div>`;
+            
+            // Auto-close after 5 seconds
+            setTimeout(() => {
+                closeDemo();
+            }, 5000);
+        }
+
+        function resetDemo() {
+            document.getElementById('bigTimer').textContent = '2:00';
+            document.getElementById('bigTimer').style.color = '#2196F3';
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('progressPercent').textContent = '0%';
+            document.getElementById('scannerMessage').textContent = 
+                `Position ${currentMethod === 'QR' ? 'QR code' : 'face'} in frame`;
+            document.getElementById('statusText').textContent = 
+                'Preparing verification system...';
+        }
+
+        function closeDemo() {
+            if (demoTimer) {
+                clearInterval(demoTimer);
+                demoTimer = null;
+            }
+            document.getElementById('scannerOverlay').style.display = 'none';
+        }
+
+        // Close on overlay click
+        document.getElementById('scannerOverlay').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeDemo();
+            }
+        });
+
+        // Prevent accidental closure
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeDemo();
+            }
+        });
+    </script>
+</body>
+</html>

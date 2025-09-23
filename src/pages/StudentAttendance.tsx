@@ -1,4 +1,13 @@
 
+// Timing constants (in milliseconds)
+const TIMING = {
+  QR_MIN_SCAN: 300000,   // 5 minutes minimum QR scanning
+  QR_ACTIVE_SCAN: 300000, // 5 minutes active QR scanning (used in UI progress)
+  QR_VERIFY: 30000,      // 30 seconds QR verification
+  FACE_SCAN: 300000 * 3, // face scanning = 3x QR active scan => 15 minutes
+  FACE_VERIFY: 30000     // 30 seconds face verification
+} as const;
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import QrScanner from 'qr-scanner';
 import { QrCode, Calendar, CheckCircle, XCircle, Clock, Camera, MapPin, Award } from 'lucide-react';
@@ -10,7 +19,14 @@ import { useNavigate } from 'react-router-dom';
 import { useAttendance } from '@/hooks/useAttendanceStore';
 import { supabase } from '@/integrations/supabase/client';
 import { NativeScan, nativeAvailable } from '@/lib/nativeBridge';
+
+// Using TIMING constants defined above
 import { Progress } from '@/components/ui/progress';
+import '../styles/scanner-animations.css';
+
+// Using TIMING constants defined above
+
+// Using TIMING constants defined above
 
 const StudentAttendance = () => {
   const navigate = useNavigate();
@@ -54,6 +70,10 @@ const StudentAttendance = () => {
   const faceScanStartRef = useRef<number>(0);
   const [faceProgress, setFaceProgress] = useState<number>(0);
   const faceProgressIntervalRef = useRef<number | null>(null);
+  const verifyingStartRef = useRef<number | null>(null);
+  const verifyingLockRef = useRef<boolean>(false);
+  const qrVerifyingLockRef = useRef<boolean>(false);
+  // Using TIMING.QR_VERIFY defined above
   const [faceTimeRemaining, setFaceTimeRemaining] = useState<number>(0);
   const faceStatusUnsubRef = useRef<null | { remove: () => void }>(null);
   const faceDetectedUnsubRef = useRef<null | { remove: () => void }>(null);
@@ -83,6 +103,55 @@ const StudentAttendance = () => {
       console.error('MediaPipe load error', e);
       return null;
     }
+  }, []);
+
+  // --- Face simulator (modular) ---
+  const createFaceSimulator = useCallback((opts?: { durationMs?: number } ) => {
+    const duration = opts?.durationMs ?? 90000; // default 90s
+    const initMs = 5000; // initializing phase
+    const verifyMs = 10000; // verifying phase at end
+    const scanningMs = Math.max(0, duration - initMs - verifyMs);
+
+    let interval: number | null = null;
+    let startTs = 0;
+
+    const listeners: {
+      onUpdate?: (phase: string, progress: number, remainingSec: number) => void;
+      onComplete?: (success: boolean) => void;
+    } = {};
+
+    const start = (l?: typeof listeners) => {
+      startTs = Date.now();
+      if (l) Object.assign(listeners, l);
+      interval = window.setInterval(() => {
+        const elapsed = Date.now() - startTs;
+        const clamped = Math.min(elapsed, duration);
+        const progress = Math.round((clamped / duration) * 100);
+
+        let phase = 'initializing';
+        if (clamped >= initMs + scanningMs + verifyMs) phase = 'complete';
+        else if (clamped >= initMs + scanningMs) phase = 'verifying';
+        else if (clamped >= initMs) phase = 'analyzing';
+        else phase = 'initializing';
+
+        const remaining = Math.max(0, Math.ceil((duration - clamped) / 1000));
+        listeners.onUpdate?.(phase, progress, remaining);
+
+        if (clamped >= duration) {
+          // finish
+          if (interval) { window.clearInterval(interval); interval = null; }
+          // simulate success (90%)
+          const success = Math.random() > 0.1;
+          listeners.onComplete?.(success);
+        }
+      }, 500);
+    };
+
+    const stop = () => {
+      if (interval) { window.clearInterval(interval); interval = null; }
+    };
+
+    return { start, stop };
   }, []);
 
   const todayClasses = [
@@ -164,29 +233,44 @@ const StudentAttendance = () => {
 
   // --- Helpers: Progress Management ---
   const startQrProgress = useCallback(() => {
-    if (qrProgressIntervalRef.current) window.clearInterval(qrProgressIntervalRef.current);
+    console.log('🚀 Starting QR progress timer');
+    if (qrProgressIntervalRef.current) {
+      window.clearInterval(qrProgressIntervalRef.current);
+      qrProgressIntervalRef.current = null;
+    }
+    
     setQrProgress(0);
-    setQrTimeRemaining(60);
-    // Update progress based on actual time elapsed
+  setQrTimeRemaining(TIMING.QR_ACTIVE_SCAN / 1000); // seconds
+  qrScanStartRef.current = Date.now();
+    
+    // Update progress every 500ms for smooth animation
     qrProgressIntervalRef.current = window.setInterval(() => {
       const elapsed = Date.now() - qrScanStartRef.current;
-      const remaining = Math.max(0, 60 - Math.floor(elapsed / 1000));
-      const progress = Math.min(70, (elapsed / 60000) * 70); // 70% max during scanning
+  const elapsedSeconds = Math.floor(elapsed / 1000);
+  const remaining = Math.max(0, Math.floor(TIMING.QR_ACTIVE_SCAN / 1000) - elapsedSeconds);
+  const progress = Math.min(100, (elapsed / TIMING.QR_ACTIVE_SCAN) * 100);
+      
+      console.log(`📱 QR Timer: ${elapsedSeconds}s elapsed, ${remaining}s remaining, ${progress.toFixed(1)}% progress`);
       
       setQrTimeRemaining(remaining);
       setQrProgress(progress);
       
-      if (qrPhase !== 'scanning' || remaining <= 0) {
+      if (remaining <= 0) {
+        console.log('✅ QR Timer completed - 2 minutes elapsed');
         if (qrProgressIntervalRef.current) {
           window.clearInterval(qrProgressIntervalRef.current);
           qrProgressIntervalRef.current = null;
         }
       }
-    }, 1000);
-  }, [qrPhase]);
+    }, 500); // More frequent updates for smoother animation
+  }, []);
+
+  // Using TIMING.QR_VERIFY defined above
 
   const startQrVerifyingProgress = useCallback(() => {
     if (qrProgressIntervalRef.current) window.clearInterval(qrProgressIntervalRef.current);
+    // Calculate interval to match TIMING.QR_VERIFY duration
+    // 100 steps total, so interval = TIMING.QR_VERIFY / 100
     qrProgressIntervalRef.current = window.setInterval(() => {
       setQrProgress((p) => {
         if (qrPhase !== 'verifying') return p;
@@ -194,9 +278,9 @@ const StudentAttendance = () => {
           if (qrProgressIntervalRef.current) window.clearInterval(qrProgressIntervalRef.current);
           return 100;
         }
-        return Math.min(100, p + 6);
+        return Math.min(100, p + 1);
       });
-    }, 80);
+    }, TIMING.QR_VERIFY / 100); // This will take exactly TIMING.QR_VERIFY to complete
   }, [qrPhase]);
 
   const resetQrProgress = useCallback(() => {
@@ -206,29 +290,42 @@ const StudentAttendance = () => {
   }, []);
 
   const startFaceProgress = useCallback(() => {
-    if (faceProgressIntervalRef.current) window.clearInterval(faceProgressIntervalRef.current);
-    setFaceProgress(0);
-    setFaceTimeRemaining(60);
-    // Update progress based on actual time elapsed
+    console.log('🔥 Starting Face progress timer');
+    if (faceProgressIntervalRef.current) {
+      window.clearInterval(faceProgressIntervalRef.current);
+      faceProgressIntervalRef.current = null;
+    }
+    
+  setFaceProgress(0);
+  setFaceTimeRemaining(TIMING.FACE_SCAN / 1000); // face scanning (3x QR active scan)
+  faceScanStartRef.current = Date.now();
+    
+    // Update progress every 750ms for smooth animation
     faceProgressIntervalRef.current = window.setInterval(() => {
       const elapsed = Date.now() - faceScanStartRef.current;
-      const remaining = Math.max(0, 60 - Math.floor(elapsed / 1000));
-      const progress = Math.min(70, (elapsed / 60000) * 70); // 70% max during scanning
+  const elapsedSeconds = Math.floor(elapsed / 1000);
+  const remaining = Math.max(0, Math.floor(TIMING.FACE_SCAN / 1000) - elapsedSeconds);
+  const progress = Math.min(100, (elapsed / TIMING.FACE_SCAN) * 100);
+      
+      console.log(`👤 Face Timer: ${elapsedSeconds}s elapsed, ${remaining}s remaining, ${progress.toFixed(1)}% progress`);
       
       setFaceTimeRemaining(remaining);
       setFaceProgress(progress);
       
-      if (facePhase !== 'scanning' || remaining <= 0) {
+      if (remaining <= 0) {
+        console.log('✅ Face Timer completed - 4 minutes elapsed');
         if (faceProgressIntervalRef.current) {
           window.clearInterval(faceProgressIntervalRef.current);
           faceProgressIntervalRef.current = null;
         }
       }
-    }, 1000);
-  }, [facePhase]);
+    }, 750); // Slightly slower updates for more deliberate feel
+  }, []);
 
   const startFaceVerifyingProgress = useCallback(() => {
     if (faceProgressIntervalRef.current) window.clearInterval(faceProgressIntervalRef.current);
+    // Make verifying progress last approximately 10 seconds:
+    // increment by 1 every 100ms -> 100 * 100ms = 10,000ms
     faceProgressIntervalRef.current = window.setInterval(() => {
       setFaceProgress((p) => {
         if (facePhase !== 'verifying') return p;
@@ -236,9 +333,9 @@ const StudentAttendance = () => {
           if (faceProgressIntervalRef.current) window.clearInterval(faceProgressIntervalRef.current);
           return 100;
         }
-        return Math.min(100, p + 6);
+        return Math.min(100, p + 1);
       });
-    }, 80);
+    }, 100);
   }, [facePhase]);
 
   const resetFaceProgress = useCallback(() => {
@@ -324,8 +421,32 @@ const StudentAttendance = () => {
     }
   }, []);
 
+  // Add a ref to store the scanner timeout
+  const scannerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clean up timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (scannerTimeoutRef.current) {
+        clearTimeout(scannerTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const stopQRScanner = useCallback(async () => {
+    // If QR verifying is in progress, delay stopping until verification completes
+    if (qrVerifyingLockRef.current) {
+      console.log('🛑 QR: stop requested but verifying lock active — delaying stop');
+      setTimeout(() => { stopQRScanner(); }, 500);
+      return;
+    }
     try {
+      // Clear the scanner timeout if it exists
+      if (scannerTimeoutRef.current) {
+        clearTimeout(scannerTimeoutRef.current);
+        scannerTimeoutRef.current = null;
+      }
+      
       if (nativeAvailable) {
         try { await NativeScan.stopQrScan(); } catch {}
       }
@@ -335,7 +456,7 @@ const StudentAttendance = () => {
         scannerRef.current = null;
       }
     } catch (e) {
-      // no-op
+      console.error('Error stopping QR scanner:', e);
     }
     if (qrDetectIntervalRef.current) {
       window.clearInterval(qrDetectIntervalRef.current);
@@ -360,6 +481,13 @@ const StudentAttendance = () => {
 
   const stopFaceScanner = useCallback(() => {
     console.log('🛑 Face: Stopping face scanner...');
+    // If we're currently in a locked verifying state, delay stopping until unlocked
+    if (verifyingLockRef.current) {
+      console.log('🛑 Face: stop requested but verifying lock active — delaying stop');
+      // retry after short delay
+      setTimeout(() => stopFaceScanner(), 500);
+      return;
+    }
     
     try {
       if (nativeAvailable) {
@@ -436,18 +564,17 @@ const StudentAttendance = () => {
       console.log('✅ QR: Valid QR detected, continuing scan for realistic duration...');
     }
 
-    // ALWAYS enforce minimum scanning duration - no exceptions
-    const minScanMs = 60000; // 1 minute minimum scanning
+  // Add delay with animations - use TIMING values for consistency
+  const minScanMs = TIMING.QR_MIN_SCAN; // minimum scanning
+  const verifyTime = TIMING.QR_VERIFY; // verification time
     const elapsed = Date.now() - qrScanStartRef.current;
-    console.log(`⏱️ QR TIMING: ${elapsed}ms elapsed / ${minScanMs}ms required (${Math.round((minScanMs - elapsed) / 1000)}s remaining)`);
     
-    // NEVER proceed before minimum time, even with valid detection
     if (elapsed < minScanMs) {
-      console.log(`🔄 QR: FORCED WAIT - Still scanning... ${Math.round((minScanMs - elapsed) / 1000)}s remaining`);
-      return; // Always return early if not enough time has passed
+      console.log(`⏳ QR: Still scanning... ${Math.floor(elapsed/1000)}s elapsed, need ${Math.floor((minScanMs - elapsed)/1000)}s more`);
+      return; // Wait minimum time for animations to play
     }
 
-    console.log('🎯 QR: FULL MINUTE COMPLETED - proceeding to verification...');
+  console.log(`🎯 QR: Minimum scan (${minScanMs/1000}s) completed - proceeding to verification...`);
 
     // Stop scanning and proceed to verification
     if (scannerRef.current) {
@@ -458,11 +585,13 @@ const StudentAttendance = () => {
       qrDetectIntervalRef.current = null;
     }
     
-    // Move to verification phase
-    setQrPhase('verifying');
-    startQrVerifyingProgress();
+  // Move to verification phase
+  setQrPhase('verifying');
+  // Lock scanner to prevent it being stopped during server verification
+  qrVerifyingLockRef.current = true;
+  startQrVerifyingProgress();
     
-    setTimeout(async () => {
+  setTimeout(async () => {
       if (!studentData) {
         toast.error('Student data not loaded. Please try again.');
         return;
@@ -476,15 +605,15 @@ const StudentAttendance = () => {
       });
       
             if (!ok) {
-        toast.error('Invalid or expired QR code.');
-        setQrPhase('error');
+              toast.error('Invalid or expired QR code.');
+              setQrPhase('error');
         setTimeout(async () => {
           await stopQRScanner();
         }, 2000);
         return;
       }
 
-      // Successful verification - mark attendance
+  // Successful verification - mark attendance
       dispatch({
         type: 'MARK_ATTENDANCE',
         payload: {
@@ -502,13 +631,14 @@ const StudentAttendance = () => {
       });
       
       setQrPhase('success');
-      toast.success('Attendance marked successfully!');
+      toast.success('✅ ATTENDANCE SIGNED - QR Code Verified!');
       
-      // Hold success state before closing
+      // Hold success state before closing; clear lock after hold
       setTimeout(async () => {
+        qrVerifyingLockRef.current = false;
         await stopQRScanner();
-      }, 2000);
-    }, 1800);
+      }, TIMING.QR_VERIFY);
+    }, verifyTime); // wait verification window (TIMING.QR_VERIFY)
   }, [dispatch, stopQRScanner, studentData, qrDetected, usingNativeBarcode]);
 
   const markAttendanceQR = useCallback(async () => {
@@ -517,13 +647,39 @@ const StudentAttendance = () => {
       return;
     }
 
+    setShowQRModal(true);
+    setScanningQR(true);
+    setQrPhase('scanning');
+    resetQrProgress();
+    setQrDetected(false);
+    setUsingNativeBarcode(false);
+
+    // Clear any existing timeout
+    if (scannerTimeoutRef.current) {
+      clearTimeout(scannerTimeoutRef.current);
+    }
+
+    // Set a timeout to stop the scanner after the active QR scan duration
+    scannerTimeoutRef.current = setTimeout(async () => {
+      if (scanningQR && !qrDetected) {
+        toast.info(`QR scanner timed out after ${Math.floor(TIMING.QR_ACTIVE_SCAN/1000)} seconds`);
+        await stopQRScanner();
+      }
+    }, TIMING.QR_ACTIVE_SCAN);
+
     try {
-      console.log('🚀 QR: Starting QR scan process...');
-      setShowQRModal(true);
-      setScanningQR(true);
-      setQrPhase('scanning');
-      qrScanStartRef.current = Date.now();
-      console.log(`⏰ QR: Scan started at ${qrScanStartRef.current}`);
+      // Check camera permissions first
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        // Immediately stop the stream since we just needed to check permissions
+        stream.getTracks().forEach(track => track.stop());
+      } catch (err) {
+        console.error('Camera access error:', err);
+        toast.error('Camera access denied. Please enable camera permissions in your browser settings.');
+        await stopQRScanner();
+        return;
+      }
+      // Use `videoRef` (React ref) for the scanner video element after modal open
       startQrProgress();
 
       // If native environment, start native scanning instead
@@ -611,7 +767,21 @@ const StudentAttendance = () => {
       }
     } catch (error) {
       console.error('QR scanner error:', error);
-      toast.error('Failed to start QR scanner. Please check camera permissions.');
+      let errorMessage = 'Failed to start QR scanner.';
+      
+      if (error instanceof Error) {
+        if (error.name === 'NotAllowedError') {
+          errorMessage = 'Camera access was denied. Please allow camera access to scan QR codes.';
+        } else if (error.name === 'NotFoundError') {
+          errorMessage = 'No camera found. Please ensure you have a working camera connected.';
+        } else if (error.name === 'NotReadableError') {
+          errorMessage = 'Camera is already in use by another application.';
+        } else if (error.name === 'OverconstrainedError') {
+          errorMessage = 'Camera does not support the required constraints.';
+        }
+      }
+      
+      toast.error(errorMessage);
       await stopQRScanner();
     }
   }, [handleQRDetected, stopQRScanner, studentData]);
@@ -693,189 +863,148 @@ const StudentAttendance = () => {
 
       const landmarker = await loadMediaPipeFaceLandmarker();
       if (landmarker && v) {
-        let consecutive = 0;
         mediaPipeRunningRef.current = true;
-        mediaPipeTimerRef.current = window.setInterval(() => {
-          try {
+        const scanStartTime = Date.now();
+
+        // Enforce a minimum 2-minute scan before proceeding
+        setTimeout(() => {
+          if (!mediaPipeRunningRef.current) return;
+
+          const checkFace = () => {
             if (!mediaPipeRunningRef.current || !faceVideoRef.current) return;
+
             const ts = performance.now();
             const res = landmarker.detectForVideo(faceVideoRef.current, ts);
             const count = res?.faceLandmarks?.length || 0;
-            if (count > 0) { consecutive += 1; setFaceDetected(true); } else { consecutive = Math.max(0, consecutive - 1); setFaceDetected(false); }
-            // iPhone Face ID style: require stable detection over time
-            const minScanMs = 60000; // 1 minute minimum scanning for thorough verification
-            const enoughTime = Date.now() - faceScanStartRef.current >= minScanMs;
-            console.log(`Face detection: ${count > 0 ? 'detected' : 'none'}, consecutive: ${consecutive}, time: ${Date.now() - faceScanStartRef.current}ms / ${minScanMs}ms`);
-            
-            if (count > 0 && consecutive >= 240 && enoughTime) { // Require 240 consecutive detections (~30 seconds of stable face detection)
-              // Face detected - show scanning phase
-              if (facePhase === 'scanning') {
-                setFacePhase('aligning');
-                setTimeout(() => {
-                  if (consecutive >= 240) {
-                    setFacePhase('detected');
-                    setTimeout(() => {
-                      if (mediaPipeTimerRef.current) { window.clearInterval(mediaPipeTimerRef.current); mediaPipeTimerRef.current = null; }
-                      mediaPipeRunningRef.current = false;
-                      setFacePhase('verifying');
-                      startFaceVerifyingProgress();
-                      setTimeout(() => {
-                        setFacePhase('success');
-                        dispatch({
-                          type: 'MARK_ATTENDANCE',
-                          payload: {
-                            studentId: studentData.id,
-                            studentName: studentData.name,
-                            courseId: 'CS301',
-                            courseName: 'Database Systems',
-                            date: new Date().toLocaleDateString(),
-                            time: new Date().toLocaleTimeString(),
-                            status: 'present',
-                            method: 'Face Recognition',
-                            location: 'Room 101',
-                            lecturerName: 'Dr. John Smith',
-                          },
-                        });
-                        toast.success('Attendance Marked');
-                        // SIMULATE: In a real app, this would be a server call
-                        const isMatch = Math.random() > 0.1; // 90% success rate
 
-                        if (!isMatch) {
-                          setFacePhase('error');
-                          toast.error('Face not recognized. Please try again.');
-                          setTimeout(() => stopFaceScanner(), 2000);
-                          return;
-                        }
-                        setTimeout(() => { stopFaceScanner(); }, 1500);
-                      }, 1800);
-                    }, 800);
-                  }
-                }, 1000);
-              }
-            }
-          } catch (e) {
-            // ignore detection errors
-          }
-        }, 125);
-      } else {
-        // Fallback: FaceDetector API
-        const FaceDetectorCtor: any = (window as any).FaceDetector;
-        if (FaceDetectorCtor && typeof FaceDetectorCtor === 'function') {
-          const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 1 });
-          let consecutive = 0;
-          faceDetectIntervalRef.current = window.setInterval(async () => {
-            try {
-              if (!faceVideoRef.current) return;
-              const faces = await detector.detect(faceVideoRef.current);
-              if (faces && faces.length > 0) { 
-                consecutive += 1; 
-                setFaceDetected(true); 
-              } else { 
-                consecutive = Math.max(0, consecutive - 1); 
-                setFaceDetected(false); 
-              }
-              
-              const minScanMs = 60000; // 1 minute minimum scanning for thorough verification
-              const enoughTime = Date.now() - faceScanStartRef.current >= minScanMs;
-              console.log(`FaceDetector API: ${faces?.length || 0} faces, consecutive: ${consecutive}, time: ${Date.now() - faceScanStartRef.current}ms / ${minScanMs}ms`);
-              
-              if (faces && faces.length > 0 && consecutive >= 180 && enoughTime) { // Require 180 consecutive detections (~1 minute of stable face detection)
-                if (facePhase === 'scanning') {
-                  setFacePhase('aligning');
-                  setTimeout(() => {
-                    if (consecutive >= 180) {
-                      setFacePhase('detected');
-                      setTimeout(() => {
-                        window.clearInterval(faceDetectIntervalRef.current!);
-                        faceDetectIntervalRef.current = null;
-                        setFacePhase('verifying');
-                        startFaceVerifyingProgress();
-                        setTimeout(() => {
-                          setFacePhase('success');
-                          dispatch({
-                            type: 'MARK_ATTENDANCE',
-                            payload: {
-                              studentId: studentData.id,
-                              studentName: studentData.name,
-                              courseId: 'CS301',
-                              courseName: 'Database Systems',
-                              date: new Date().toLocaleDateString(),
-                              time: new Date().toLocaleTimeString(),
-                              status: 'present',
-                              method: 'Face Recognition',
-                              location: 'Room 101',
-                              lecturerName: 'Dr. John Smith',
-                            },
-                          });
-                          toast.success('Attendance Marked');
-                          // SIMULATE: In a real app, this would be a server call
-                          const isMatch = Math.random() > 0.1; // 90% success rate
+            if (count > 0) {
+              mediaPipeRunningRef.current = false;
+              setFacePhase('verifying');
+              verifyingStartRef.current = Date.now();
+              startFaceVerifyingProgress();
 
-                          if (!isMatch) {
-                            setFacePhase('error');
-                            toast.error('Face not recognized. Please try again.');
-                            setTimeout(() => stopFaceScanner(), 2000);
-                            return;
-                          }
-                          setTimeout(() => { stopFaceScanner(); }, 1500);
-                        }, 1800);
-                      }, 800);
-                    }
-                  }, 1000);
-                }
-              }
-            } catch (e) {
-              // ignore detection errors
-            }
-          }, 330);
-        } else {
-          // Last-resort iPhone Face ID simulation - wait full minute for realistic timing
-          console.log('Using Face ID simulation fallback');
-          setTimeout(() => {
-            if (!scanningFace) return; // Check if still scanning
-            setFaceDetected(true);
-            setFacePhase('aligning');
-            setTimeout(() => {
-              if (!scanningFace) return;
-              setFacePhase('detected');
+              // Extended verification phase (use TIMING.FACE_VERIFY)
               setTimeout(() => {
-                if (!scanningFace) return;
-                setFacePhase('verifying');
-                startFaceVerifyingProgress();
-                setTimeout(() => {
-                  if (!scanningFace) return;
-                  setFacePhase('success');
-                  dispatch({
-                    type: 'MARK_ATTENDANCE',
-                    payload: {
-                      studentId: studentData.id,
-                      studentName: studentData.name,
-                      courseId: 'CS301',
-                      courseName: 'Database Systems',
-                      date: new Date().toLocaleDateString(),
-                      time: new Date().toLocaleTimeString(),
-                      status: 'present',
-                      method: 'Face Recognition',
-                      location: 'Room 101',
-                      lecturerName: 'Dr. John Smith',
-                    },
-                  });
-                  toast.success('Attendance Marked');
-                  // SIMULATE: In a real app, this would be a server call
-                  const isMatch = Math.random() > 0.1; // 90% success rate
+                if (!mediaPipeRunningRef.current) return;
 
-                  if (!isMatch) {
-                    setFacePhase('error');
-                    toast.error('Face not recognized. Please try again.');
-                    setTimeout(() => stopFaceScanner(), 2000);
-                    return;
+                // 90% success rate simulation
+                const isMatch = Math.random() > 0.1;
+
+                const verStart = verifyingStartRef.current || Date.now();
+                const verElapsed = Date.now() - verStart;
+
+                // Ensure the full verifying window has passed before allowing success
+                if (isMatch) {
+                  const proceedSuccess = () => {
+                    verifyingStartRef.current = null;
+                    setFacePhase('success');
+                    dispatch({
+                      type: 'MARK_ATTENDANCE',
+                      payload: {
+                        studentId: studentData.id,
+                        studentName: studentData.name,
+                        courseId: 'CS301',
+                        courseName: 'Database Systems',
+                        date: new Date().toLocaleDateString(),
+                        time: new Date().toLocaleTimeString(),
+                        status: 'present',
+                        method: 'Face Recognition',
+                        location: 'Room 101',
+                        lecturerName: 'Dr. John Smith'
+                      }
+                    });
+                    toast.success('✅ ATTENDANCE SIGNED - Face Recognition Verified!');
+                    setTimeout(() => stopFaceScanner(), 5000);
+                  };
+                  const faceVerifyTime = TIMING.FACE_VERIFY; // verification window
+                  if (verElapsed < faceVerifyTime) {
+                    const wait = faceVerifyTime - verElapsed;
+                    console.log(`Face verifying too fast (${verElapsed}ms), waiting ${wait}ms`);
+                    setTimeout(proceedSuccess, wait);
+                  } else {
+                    proceedSuccess();
                   }
-                  setTimeout(() => { stopFaceScanner(); }, 1500);
-                }, 2500); // Longer verification time
-              }, 1500); // Longer detection time
-            }, 2000); // Longer alignment time
-          }, 60000); // Wait full 1 minute before starting simulation
-        }
+                } else {
+                  setFacePhase('error');
+                  toast.error('Face not recognized. Please try again.');
+                  setTimeout(() => stopFaceScanner(), 5000);
+                }
+              }, TIMING.FACE_VERIFY); // verification window
+              mediaPipeTimerRef.current = null;
+            } else {
+              setTimeout(checkFace, 500);
+            }
+          };
+          checkFace();
+  }, TIMING.FACE_SCAN);
+
+        // Update progress + detection feedback during scan
+        mediaPipeTimerRef.current = window.setInterval(() => {
+          if (!mediaPipeRunningRef.current) return;
+
+          const elapsed = Date.now() - scanStartTime;
+          const remaining = Math.max(0, TIMING.FACE_SCAN - elapsed);
+          const progress = Math.min(100, (elapsed / TIMING.FACE_SCAN) * 100);
+
+          setFaceTimeRemaining(Math.ceil(remaining / 1000));
+          setFaceProgress(progress);
+
+          if (faceVideoRef.current) {
+            const ts = performance.now();
+            const res = landmarker.detectForVideo(faceVideoRef.current, ts);
+            const count = res?.faceLandmarks?.length || 0;
+            setFaceDetected(count > 0);
+          }
+  }, 100);
+      } else {
+        // Fallback simulation with realistic timing using createFaceSimulator
+        console.log('Using Face ID simulation fallback (simulator)');
+        const simDuration = TIMING.FACE_SCAN; // keep simulator length in sync with TIMING
+        const sim = createFaceSimulator({ durationMs: simDuration });
+
+        setFacePhase('scanning');
+        sim.start({
+          onUpdate: (phase, progress, remaining) => {
+            // Map simulator phases -> UI phases
+            if (!scanningFace) return;
+            if (phase === 'initializing') setFacePhase('aligning');
+            else if (phase === 'analyzing') setFacePhase('detected');
+            else if (phase === 'verifying') setFacePhase('verifying');
+            setFaceProgress(progress);
+            setFaceTimeRemaining(remaining);
+          },
+          onComplete: (success) => {
+            if (!scanningFace) return;
+            verifyingStartRef.current = null;
+            if (success) {
+              setFacePhase('success');
+              console.log('Face recognition successful (simulated)');
+              dispatch({
+                type: 'MARK_ATTENDANCE',
+                payload: {
+                  studentId: studentData.id,
+                  studentName: studentData.name,
+                  courseId: 'CS301',
+                  courseName: 'Database Systems',
+                  date: new Date().toLocaleDateString(),
+                  time: new Date().toLocaleTimeString(),
+                  status: 'present',
+                  method: 'Face Recognition',
+                  location: 'Room 101',
+                  lecturerName: 'Dr. John Smith'
+                }
+              });
+              toast.success('✅ ATTENDANCE SIGNED - Face Recognition Verified!');
+            } else {
+              setFacePhase('error');
+              toast.error('Face not recognized. Please try again.');
+            }
+            setTimeout(() => {
+              try { sim.stop(); } catch (e) {}
+              stopFaceScanner();
+            }, 2500);
+          }
+        });
       }
     } catch (error) {
       console.error('Face scanner error:', error);
@@ -1014,11 +1143,11 @@ const StudentAttendance = () => {
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="text-xs text-gray-500 text-right w-48">
-                      {facePhase === 'scanning' && !faceDetected && <div className='text-center'><p>Position your face in the frame</p><p className='text-sm text-muted-foreground'>Waiting for a clear view...</p><p className='text-xs font-mono text-blue-600'>{faceTimeRemaining}s remaining</p></div>}
-                      {facePhase === 'scanning' && faceDetected && <div className='text-center'><CheckCircle className='mx-auto h-8 w-8 text-green-500' /><p>Face Detected</p><p className='text-sm text-muted-foreground'>Hold still...</p><p className='text-xs font-mono text-blue-600'>{faceTimeRemaining}s remaining</p></div>}
+                      {facePhase === 'scanning' && !faceDetected && <div className='text-center'><p>Position your face in the frame</p><p className='text-sm text-muted-foreground'>Waiting for a clear view...</p><p className='text-xs font-mono text-blue-600'>{Math.floor(faceTimeRemaining/60)}:{String(faceTimeRemaining%60).padStart(2, '0')} remaining</p></div>}
+                      {facePhase === 'scanning' && faceDetected && <div className='text-center'><CheckCircle className='mx-auto h-8 w-8 text-green-500' /><p>Face Detected</p><p className='text-sm text-muted-foreground'>Hold still...</p><p className='text-xs font-mono text-blue-600'>{Math.floor(faceTimeRemaining/60)}:{String(faceTimeRemaining%60).padStart(2, '0')} remaining</p></div>}
                       {facePhase === 'aligning' && <div className='text-center'><p>Scanning...</p><p className='text-sm text-muted-foreground'>Analyzing facial features...</p></div>}
                       {facePhase === 'verifying' && <div className='text-center'><p>Verifying Identity</p><p className='text-sm text-muted-foreground'>Matching with your profile...</p></div>}
-                      {facePhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>Attendance Marked</p><p className='text-sm text-muted-foreground'>Welcome!</p></div>}
+                      {facePhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>ATTENDANCE SIGNED</p><p className='text-sm text-muted-foreground'>Face Recognition Verified!</p></div>}
                       {facePhase === 'error' && <div className='text-center'><XCircle className='mx-auto h-8 w-8 text-red-500' /><p>Face Not Recognized</p><p className='text-sm text-muted-foreground'>Please try again.</p></div>}
                     </div>
                     <Button variant="outline" onClick={stopFaceScanner}>Close</Button>
@@ -1027,7 +1156,13 @@ const StudentAttendance = () => {
                 <div className="relative bg-black aspect-video">
                   <video ref={faceVideoRef} className="w-full h-full object-cover" muted playsInline />
                   {/* OpenCV-like overlay (face box with corner guides) */}
-                  <div className={`absolute inset-10 rounded-xl border-2 pointer-events-none ${facePhase === 'verifying' ? 'border-yellow-400/80' : facePhase === 'success' ? 'border-green-500/90' : faceDetected ? 'border-green-400/90' : 'border-blue-400/70'}`}>
+                  <div className={`absolute inset-10 rounded-xl border-2 pointer-events-none transition-all duration-500 ${
+                    facePhase === 'verifying' ? 'border-yellow-400/80 verification-active' : 
+                    facePhase === 'success' ? 'border-green-500/90 success-ripple' : 
+                    facePhase === 'aligning' ? 'border-blue-500/90 biometric-scan' :
+                    faceDetected ? 'border-green-400/90 facial-analysis' : 
+                    'border-blue-400/70 security-scanner'
+                  }`}>
                     {/* Corner indicators */}
                     <div className={`absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 rounded-tl-lg transition-colors duration-300 ${
                       facePhase === 'detected' ? 'border-green-400/90' :
@@ -1054,43 +1189,93 @@ const StudentAttendance = () => {
                       faceDetected ? 'border-green-400/90' : 'border-blue-400/70'
                     }`}></div>
                   </div>
-                  {/* Animated scanning line */}
-                  <div className={`absolute left-12 right-12 top-16 h-1 transition-all duration-300 ${
+                  {/* Animated scanning line with enhanced animations */}
+                  <div className={`absolute left-12 right-12 h-1 transition-all duration-500 ${
                     facePhase === 'detected' ? 'bg-green-400/90 animate-pulse shadow-[0_0_20px_rgba(34,197,94,0.8)]' :
-                    facePhase === 'verifying' ? 'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.8)]' : 
-                    facePhase === 'success' ? 'bg-green-500/90 shadow-[0_0_20px_rgba(34,197,94,0.9)]' : 
+                    facePhase === 'verifying' ? 'bg-yellow-400/90 verification-active shadow-[0_0_25px_rgba(251,191,36,0.8)]' : 
+                    facePhase === 'success' ? 'bg-green-500/90 shadow-[0_0_30px_rgba(34,197,94,0.9)]' : 
+                    facePhase === 'aligning' ? 'bg-blue-500/90 deep-analysis shadow-[0_0_25px_rgba(59,130,246,0.8)]' :
                     'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.7)]'
-                  }`}></div>
+                  }`} style={{
+                    top: `${16 + (faceProgress * 0.6)}px`, // Scanning line moves down as progress increases
+                    animation: facePhase === 'scanning' ? 'scanLine 4s ease-in-out infinite' : undefined
+                  }}></div>
+                  
+                  {/* Additional animated elements for longer engagement */}
+                  {facePhase === 'scanning' && (
+                    <>
+                      {/* Rotating scanner ring */}
+                      <div className="absolute inset-8 border-2 border-blue-400/30 rounded-full deep-analysis" style={{animationDuration: '6s'}}></div>
+                      {/* Security grid overlay */}
+                      <div className="absolute inset-12 scanner-grid opacity-30"></div>
+                      {/* Pulsing dots */}
+                      <div className="absolute top-4 left-4 w-2 h-2 bg-blue-400 rounded-full animate-ping" style={{animationDelay: '0s'}}></div>
+                      <div className="absolute top-4 right-4 w-2 h-2 bg-blue-400 rounded-full animate-ping" style={{animationDelay: '1.5s'}}></div>
+                      <div className="absolute bottom-4 left-4 w-2 h-2 bg-blue-400 rounded-full animate-ping" style={{animationDelay: '3s'}}></div>
+                      <div className="absolute bottom-4 right-4 w-2 h-2 bg-blue-400 rounded-full animate-ping" style={{animationDelay: '4.5s'}}></div>
+                    </>
+                  )}
+                  {facePhase === 'verifying' && (
+                    <>
+                      {/* Verification overlay */}
+                      <div className="absolute inset-6 border border-yellow-400/50 rounded-lg verification-active"></div>
+                      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-yellow-400 font-bold text-sm">ANALYZING</div>
+                    </>
+                  )}
                 </div>
                 <div className="p-4 text-sm text-gray-600">
-                  {facePhase === 'scanning' && 'Position your face within the frame. Looking for facial features...'}
+                  {facePhase === 'scanning' && (
+                    <div className="flex items-center space-x-2 text-blue-600">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>🔍 Initializing biometric scanner... Position your face within the frame</span>
+                    </div>
+                  )}
                   {facePhase === 'aligning' && (
                     <div className="flex items-center space-x-2 text-yellow-600">
                       <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-                      <span>Aligning face position...</span>
+                      <span>📐 Calibrating facial landmarks and depth mapping...</span>
                     </div>
                   )}
                   {facePhase === 'detected' && (
                     <div className="flex items-center space-x-2 text-green-600">
                       <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                      <span>Face detected! Hold steady...</span>
+                      <span>👤 Face detected! Capturing biometric signature...</span>
                     </div>
                   )}
                   {facePhase === 'verifying' && (
-                    <div className="flex items-center space-x-2 text-blue-600">
-                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                      <span>Analyzing facial features...</span>
+                    <div className="flex items-center space-x-2 text-yellow-600">
+                      <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                      <span>🔐 Cross-referencing with secure database... Please hold still</span>
                     </div>
                   )}
                   {facePhase === 'success' && (
                     <div className="flex items-center space-x-2 text-green-600">
                       <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                      <span>✓ Face verified, attendance marked</span>
+                      <span>✅ BIOMETRIC VERIFICATION COMPLETE - Identity confirmed & attendance signed</span>
+                    </div>
+                  )}
+                  {facePhase === 'error' && (
+                    <div className="flex items-center space-x-2 text-red-600">
+                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                      <span>❌ Biometric verification failed - Please try again</span>
                     </div>
                   )}
                 </div>
                 <div className="px-4 pb-4">
-                  <Progress value={faceProgress} />
+                  <div className="relative">
+                    <Progress value={faceProgress} className={`${
+                      facePhase === 'scanning' ? 'security-progress' : 
+                      facePhase === 'verifying' ? 'enhanced-progress verification-active' :
+                      'enhanced-progress'
+                    }`} />
+                    {(facePhase === 'scanning' || facePhase === 'verifying') && (
+                      <div className="absolute top-0 left-0 right-0 bottom-0 bg-gradient-to-r from-transparent via-blue-400/20 to-transparent animate-pulse"></div>
+                    )}
+                  </div>
+                  <div className="flex justify-between items-center mt-2 text-xs text-gray-500">
+                    <span className="loading-dots">{facePhase === 'verifying' ? 'Verifying' : facePhase === 'aligning' ? 'Aligning' : 'Analyzing'}</span>
+                    <span>{Math.floor(faceTimeRemaining/60)}:{String(faceTimeRemaining%60).padStart(2, '0')} remaining</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1112,7 +1297,7 @@ const StudentAttendance = () => {
                       {qrPhase === 'scanning' && !qrDetected && <div className='text-center'><p>Align QR code in frame</p><p className='text-sm text-muted-foreground'>Searching for a valid code...</p><p className='text-xs font-mono text-blue-600'>{qrTimeRemaining}s remaining</p></div>}
                       {qrPhase === 'scanning' && qrDetected && <div className='text-center'><CheckCircle className='mx-auto h-8 w-8 text-green-500' /><p>QR Code Detected</p><p className='text-sm text-muted-foreground'>Hold steady while we verify...</p><p className='text-xs font-mono text-blue-600'>{qrTimeRemaining}s remaining</p></div>}
                       {qrPhase === 'verifying' && <div className='text-center'><p>Verifying Session</p><p className='text-sm text-muted-foreground'>Checking course and session details...</p></div>}
-                      {qrPhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>Attendance Marked</p><p className='text-sm text-muted-foreground'>You're all set!</p></div>}
+                      {qrPhase === 'success' && <div className='text-center'><Award className='mx-auto h-8 w-8 text-green-500' /><p>ATTENDANCE SIGNED</p><p className='text-sm text-muted-foreground'>QR Code Verified Successfully!</p></div>}
                       {qrPhase === 'error' && <div className='text-center'><XCircle className='mx-auto h-8 w-8 text-red-500' /><p>Verification Failed</p><p className='text-sm text-muted-foreground'>Invalid or expired QR code.</p></div>}
                     </div>
                     <Button variant="outline" onClick={stopQRScanner}>Close</Button>
@@ -1121,43 +1306,97 @@ const StudentAttendance = () => {
                 <div className="relative bg-black aspect-video">
                   <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
                   {/* Scan overlay box */}
-                  <div className={`absolute inset-6 border-2 rounded-lg pointer-events-none transition-colors duration-300 ${
-                    qrPhase === 'detected' ? 'border-green-400/90 shadow-lg shadow-green-400/30' :
-                    qrPhase === 'verifying' ? 'border-blue-400/80 shadow-lg shadow-blue-400/30' : 
-                    qrPhase === 'success' ? 'border-green-500/90 shadow-lg shadow-green-500/40' : 
-                    'border-blue-400/70'
+                  <div className={`absolute inset-6 border-2 rounded-lg pointer-events-none transition-all duration-500 ${
+                    qrPhase === 'detected' ? 'border-green-400/90 shadow-lg shadow-green-400/30 code-analysis' :
+                    qrPhase === 'verifying' ? 'border-yellow-400/80 shadow-lg shadow-yellow-400/30 qr-verification' : 
+                    qrPhase === 'success' ? 'border-green-500/90 shadow-lg shadow-green-500/40 success-ripple' : 
+                    'border-blue-400/70 security-scanner'
                   }`}></div>
-                  {/* Animated scanning line */}
-                  <div className={`absolute left-6 right-6 top-12 h-0.5 transition-all duration-300 ${
+                  {/* Enhanced animated scanning line */}
+                  <div className={`absolute left-6 right-6 h-0.5 transition-all duration-500 ${
                     qrPhase === 'detected' ? 'bg-green-400/90 animate-pulse shadow-[0_0_20px_rgba(34,197,94,0.8)]' :
                     qrPhase === 'verifying' ? 'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.8)]' : 
                     qrPhase === 'success' ? 'bg-green-500/90 shadow-[0_0_20px_rgba(34,197,94,0.9)]' : 
                     'bg-blue-400/90 animate-pulse shadow-[0_0_20px_rgba(59,130,246,0.7)]'
-                  }`}></div>
+                  }`} style={{
+                    top: `${48 + (qrProgress * 2)}px`, // Scanning line moves down as progress increases
+                    animation: qrPhase === 'scanning' ? 'scanLine 2.5s ease-in-out infinite' : undefined
+                  }}></div>
+                  
+                  {/* Additional QR scanning animations */}
+                  {qrPhase === 'scanning' && (
+                    <>
+                      {/* Corner scanning indicators */}
+                      <div className="absolute top-8 left-8 w-4 h-4 border-t-2 border-l-2 border-blue-400 face-corner-indicator"></div>
+                      <div className="absolute top-8 right-8 w-4 h-4 border-t-2 border-r-2 border-blue-400 face-corner-indicator" style={{animationDelay: '0.75s'}}></div>
+                      <div className="absolute bottom-8 left-8 w-4 h-4 border-b-2 border-l-2 border-blue-400 face-corner-indicator" style={{animationDelay: '1.5s'}}></div>
+                      <div className="absolute bottom-8 right-8 w-4 h-4 border-b-2 border-r-2 border-blue-400 face-corner-indicator" style={{animationDelay: '2.25s'}}></div>
+                      
+                      {/* Rotating QR finder pattern */}
+                      <div className="absolute inset-16 border border-blue-400/40 deep-analysis" style={{animationDuration: '8s'}}></div>
+                      
+                      {/* Security grid overlay */}
+                      <div className="absolute inset-8 scanner-grid opacity-20"></div>
+                      
+                      {/* Pulsing center dot */}
+                      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-blue-400 rounded-full animate-ping"></div>
+                    </>
+                  )}
+                  {qrPhase === 'verifying' && (
+                    <>
+                      {/* Verification overlay */}
+                      <div className="absolute inset-4 border border-yellow-400/60 rounded-lg verification-active"></div>
+                      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-yellow-400 font-bold text-sm">DECODING</div>
+                    </>
+                  )}
                 </div>
                 <div className="p-4 text-sm text-gray-600">
-                  {qrPhase === 'scanning' && 'Point your camera at the classroom QR code. Scanning for valid codes...'}
+                  {qrPhase === 'scanning' && (
+                    <div className="flex items-center space-x-2 text-blue-600">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>📱 Initializing QR scanner... Point camera at the classroom QR code</span>
+                    </div>
+                  )}
                   {qrPhase === 'detected' && (
                     <div className="flex items-center space-x-2 text-green-600">
                       <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                      <span>QR Code detected! Processing...</span>
+                      <span>📊 QR Code detected! Decoding session information...</span>
                     </div>
                   )}
                   {qrPhase === 'verifying' && (
-                    <div className="flex items-center space-x-2 text-blue-600">
-                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                      <span>Verifying with server...</span>
+                    <div className="flex items-center space-x-2 text-yellow-600">
+                      <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                      <span>🔐 Authenticating with secure server... Validating session credentials</span>
                     </div>
                   )}
                   {qrPhase === 'success' && (
                     <div className="flex items-center space-x-2 text-green-600">
                       <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                      <span>✓ Attendance marked successfully</span>
+                      <span>✅ QR AUTHENTICATION COMPLETE - Session verified & attendance signed</span>
+                    </div>
+                  )}
+                  {qrPhase === 'error' && (
+                    <div className="flex items-center space-x-2 text-red-600">
+                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                      <span>❌ QR verification failed - Invalid or expired code</span>
                     </div>
                   )}
                 </div>
                 <div className="px-4 pb-4">
-                  <Progress value={qrProgress} />
+                  <div className="relative">
+                    <Progress value={qrProgress} className={`${
+                      qrPhase === 'scanning' ? 'security-progress' : 
+                      qrPhase === 'verifying' ? 'enhanced-progress verification-active' :
+                      'enhanced-progress'
+                    }`} />
+                    {(qrPhase === 'scanning' || qrPhase === 'verifying') && (
+                      <div className="absolute top-0 left-0 right-0 bottom-0 bg-gradient-to-r from-transparent via-blue-400/20 to-transparent animate-pulse"></div>
+                    )}
+                  </div>
+                  <div className="flex justify-between items-center mt-2 text-xs text-gray-500">
+                    <span className="loading-dots">{qrPhase === 'verifying' ? 'Verifying' : qrPhase === 'detected' ? 'Decoding' : 'Scanning'}</span>
+                    <span>{Math.floor(qrTimeRemaining/60)}:{String(qrTimeRemaining%60).padStart(2, '0')} remaining</span>
+                  </div>
                 </div>
               </div>
             </div>
