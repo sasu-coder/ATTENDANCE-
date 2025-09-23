@@ -70,3 +70,4 @@ Deploy to HTTPS for camera access:
 - **Backend**: Supabase (Auth, Database, RLS)
 - **Mobile**: Capacitor (Android/iOS)
 - **Deployment**: Vercel, Netlify ready
+# schollattend
